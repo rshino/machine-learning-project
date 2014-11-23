@@ -1,0 +1,217 @@
+---
+title: "project.Rmd"
+author: "shino"
+date: "11/22/2014"
+output: html_document
+---
+
+# Human Activity Recognition project
+
+Project data is sourced from research:
+
+http://groupware.les.inf.puc-rio.br/har
+
+
+Six young health participants were asked to perform one set of 10 repetitions of the  in five different fashions: 
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3Jpbwsmq3
+
+Goal is to predict from the variables the manner in which subjects performed a Unilateral Dumbbell Biceps Curl.  This is contained in the "classe" variable containing A-E:
+exercise exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). 
+
+```{r}
+library(caret)
+```
+
+## Load Data from the Source
+
+```{r data-1,cache=TRUE}
+har.1.data <- read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+finaltest <- read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+
+### Filter the raw data to remove non-numeric and null values
+
+```{r data-2}
+numeric.cols <- sapply(har.1.data, is.numeric) # remove columns not numeric
+har.2.data <- har.1.data[,numeric.cols]  # strip out non numeric columns
+#har.data <- har.2.data
+
+
+allowableNAs <- 1
+dim(har.2.data)
+#har.data <- har.2.data[complete.cases(har.2.data),]  # remove rows with NAs    
+har.data <- har.2.data[,colSums(is.na(har.2.data))<=allowableNAs]
+#har.data <- har.2.data[,colSums(is.na(har.2.data))<(nrow(har.2.data)-(allowableNAs-1))]
+#har.data <- har.data[rowSums(is.na(har.2.data))<(length(har.data)-(allowableNAs-1)),]
+
+dim(har.data)
+#head(har.data,n=16)
+har.data$classe <- har.1.data$classe
+
+colnames <- names(har.data)
+classnum <- sum(seq(1:length(colnames))*match(colnames,"classe",nomatch=0))
+
+set.seed(666)   # for repeatability 
+
+```
+
+### Create partition training and test data 10 times for cross-validation
+
+```{r}
+crossValRuns <- 5
+trainingSetPct <- 0.40
+folds10 <- createDataPartition(y=har.data$classe, p=trainingSetPct, times=crossValRuns,list=FALSE)
+
+```
+
+```{r}
+acc.lda.pca <- rep(0,10)
+acc.nb.pca <- rep(0,10)
+acc.tree <- rep(0,10)
+acc.rf<- rep(0,10)
+best.acc.lda.pca <- 0
+best.acc.nb.pca <- 0
+best.acc.tree <- 0
+best.acc.rf <- 0
+```
+
+## Create 4 models, LDA/PCA, Naive Bayesian/PCA, Tree, Random Forest
+
+### preprocess using PCA then Linear Discriminant Analysis
+
+```{r linear-discriminant-analysis,cache=TRUE }
+require(caret)
+require(MASS)
+require(e1071)
+require(klaR)
+
+for (i in 1:crossValRuns) {
+    
+    inTrain <- folds10[,i]
+    training <- har.data[inTrain,]
+    testing <- har.data[-inTrain,]    
+    
+    preProc <- preProcess(training[,-classnum],method="pca",pcaComp=16)
+    trainPC <- predict(preProc, training[,-classnum])
+    trainPC$classe = training$classe
+
+    modlda <- train(training$classe ~ .,data=trainPC,method="lda") # linear discriminant analysis
+
+    testPC <- predict(preProc, testing[,-classnum])
+    plda <- predict(modlda,testPC); 
+
+    ldamax <- confusionMatrix(testing$classe, predict(modlda, testPC))
+    acc.lda.pca[i] <- ldamax$overall["Accuracy"]
+    if (acc.lda.pca[i]>best.acc.lda.pca) {
+        bast.acc.lda.pca <- acc.lda.pca[i]
+        best.ldamax <- ldamax
+    }
+}
+summary(acc.lda.pca) # accuracy stats
+best.ldamax  # best confusion matrix
+```
+
+### Naive Bayesian
+
+```{r naive-bayesian, warning=FALSE,cache=TRUE }
+require(caret)
+require(MASS)
+require(e1071)
+require(klaR)
+
+for (i in 1:crossValRuns) {
+    
+    inTrain <- folds10[,i]
+    training <- har.data[inTrain,]
+    testing <- har.data[-inTrain,]    
+
+    preProc <- preProcess(training[,-classnum],method="pca",pcaComp=16)
+    trainPC <- predict(preProc, training[,-classnum])
+    trainPC$classe = training$classe
+
+    modnb <- train(training$classe ~ ., data=trainPC,method="nb")  # naive bayesian
+
+    testPC <- predict(preProc, testing[,-classnum])
+    pnb <- predict(modnb,testPC)
+
+    nbmax <- confusionMatrix(testing$classe, predict(modnb, testPC))
+    acc.nb.pca[i] <-nbmax$overall["Accuracy"]
+    if (acc.nb.pca[i]>best.acc.nb.pca) {
+        bast.acc.nb.pca <- acc.nb.pca[i]
+        best.nbmax <- nbmax
+    }
+}
+summary(acc.nb.pca) # accuracy stats
+best.nbmax  # best confusion matrix
+```
+
+
+### Fit a tree-based predictive model, recursive partitioning
+
+```{r tree-1,cache=TRUE}
+
+library(rattle)
+require(rpart);require(e1071)
+for (i in 1:crossValRuns) {
+    
+    inTrain <- folds10[,i]
+    training <- har.data[inTrain,]
+    testing <- har.data[-inTrain,]   
+    tree <- TRUE
+    library(caret)
+    partFit <- train(classe~.,method="rpart",data=training)
+
+    partMax<-confusionMatrix(testing$classe, predict(partFit, testing))
+    acc.tree[i] <- partMax$overall["Accuracy"]
+    if (acc.tree[i]>best.acc.tree) {
+        bast.acc.tree <- acc.tree[i]
+        best.partMax <- partMax
+        best.partFit <- partFit
+    }
+}
+summary(acc.tree) # accuracy states
+best.partMax # best confusion matrix
+fancyRpartPlot(best.partFit$finalModel) # best performing tree
+
+```
+
+### Create random forests model
+
+```{r random-1,cache=TRUE}
+
+require(rpart);require(e1071)
+for (i in 1:crossValRuns) {
+    
+    inTrain <- folds10[,i]
+    training <- har.data[inTrain,]
+    testing <- har.data[-inTrain,] 
+    rf <- TRUE
+    if(rf){
+        library(caret)
+        rfFit <- train(classe~.,method="rf",data=training)
+    }
+
+    rfMax <- confusionMatrix(testing$classe, predict(rfFit, testing))
+    acc.rf[i] <- rfMax$overall["Accuracy"]
+    if (acc.rf[i]>best.acc.rf) {
+        bast.acc.rf <- acc.rf[i]
+        best.rfMax <- rfMax
+        best.rfFit <- rfFit
+    }
+}
+summary(acc.rf) #accuracy stats
+best.rfMax  # best confusion matrix
+print(best.rfFit$finalModel) # best performing tree
+
+```
+
+## Run the test data
+
+```{r}
+final.test.data <- finaltest[,numeric.cols]
+final.test.data <- final.test.data[,colSums(is.na(har.2.data))<=allowableNAs]
+names(final.test.data)
+head(final.test.data)
+predict(best.rfFit,final.test.data)
+```
